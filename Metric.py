@@ -4,13 +4,12 @@ from IPython.display import display
 import torch
 import matplotlib.pyplot as plt
 
-def get_uplift_model_aucc(t, y_reward, y_cost, roi_pred, quantile=20, title='AUCC'):
-    global count
+def get_uplift_model_aucc(t, yr, yc, roi_pred, quantile=20, title='AUCC'):
     sorted_index = np.argsort(roi_pred)[::-1]
 
     t = t[sorted_index]
-    y_reward = y_reward[sorted_index]
-    y_cost = y_cost[sorted_index]
+    yr = yr[sorted_index]
+    yc = yc[sorted_index]
     roi_pred = roi_pred[sorted_index]
 
     n_t = np.sum(t)
@@ -22,13 +21,13 @@ def get_uplift_model_aucc(t, y_reward, y_cost, roi_pred, quantile=20, title='AUC
     nc_list = [0]
 
     if n_c > 0: 
-        delta_reward = y_reward[t].mean() - y_reward[~t].mean()
-        delta_cost = y_cost[t].mean() - y_cost[~t].mean()
+        delta_reward = yr[t].mean() - yr[~t].mean()
+        delta_cost = yc[t].mean() - yc[~t].mean()
         delta_cost_quantile = delta_cost / quantile
     else:
         n_c = 1
-        delta_reward = y_reward[t].mean()
-        delta_cost = y_cost[t].mean()
+        delta_reward = yr[t].mean()
+        delta_cost = yc[t].mean()
         delta_cost_quantile = delta_cost / quantile
 
     delta_cost_list = [0]
@@ -47,11 +46,11 @@ def get_uplift_model_aucc(t, y_reward, y_cost, roi_pred, quantile=20, title='AUC
     while i < n:
 
         if t[i]:
-            cost_t += y_cost[i]
-            reward_t += y_reward[i]
+            cost_t += yc[i]
+            reward_t += yr[i]
         else:
-            cost_c += y_cost[i]
-            reward_c += y_reward[i]
+            cost_c += yc[i]
+            reward_c += yr[i]
 
         if i >= n-1 or (j < quantile and cost_t / n_t - cost_c / n_c >= delta_cost_quantile * j):
             delta_cost_list.append(cost_t / n_t - cost_c / n_c)
@@ -100,18 +99,17 @@ def get_uplift_model_aucc(t, y_reward, y_cost, roi_pred, quantile=20, title='AUC
     # display(df_aucc)
     print("{} = ".format(title), aucc)
 
-    count += 1
     return aucc, delta_cost_list, delta_reward_list, nt_list, nc_list, t_roi_pred_avg_list, c_roi_pred_avg_list, delta_cost
 
 
-def get_per_capita_response_and_cost(t_hat, t, y_r, y_c, weights):
+def get_per_capita_response_and_cost(t_hat, t, yr, yc, weights):
 
     matching_idx = torch.where(t_hat == t)[0]
     
     S = torch.bincount(t[matching_idx], minlength=2)
     S = torch.sum(S / weights)
-    V = torch.sum(y_r[matching_idx]) / S
-    C = torch.sum(y_c[matching_idx]) / S
+    V = torch.sum(yr[matching_idx]) / S
+    C = torch.sum(yc[matching_idx]) / S
 
     return V.cuda(), C.cuda(), S.cuda()
 
