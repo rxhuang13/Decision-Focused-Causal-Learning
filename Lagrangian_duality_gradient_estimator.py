@@ -1,6 +1,24 @@
 import torch
 from Metric import * 
 
+def get_per_capita_response_and_cost(t_hat, t, yr, yc, weights):
+
+    matching_idx = torch.where(t_hat == t)[0]
+    
+    S = torch.bincount(t[matching_idx], minlength=2)
+    S = torch.sum(S / weights)
+    V = torch.sum(yr[matching_idx]) / S
+    C = torch.sum(yc[matching_idx]) / S
+
+    return V.cuda(), C.cuda(), S.cuda()
+
+def recover_solution(r_hat, c_hat, lambda_):
+
+    a = r_hat - lambda_ * c_hat
+    t_hat = torch.argmax(a, dim=1)
+
+    return t_hat
+
 def improved_finite_difference(t, yr, yc, r_hat, c_hat, lambda_, weights, h, clip=None):
         
     
@@ -19,6 +37,7 @@ def improved_finite_difference(t, yr, yc, r_hat, c_hat, lambda_, weights, h, cli
 
     #Calculate the per capita benefit, per capita cost, and number of matched samples under lambda_.
     r_bar_1, c_bar_1, N = get_per_capita_response_and_cost(t_hat, t, yr, yc, weights) 
+
     #Store the index of the successfully matched samples.
     mismatching_idx = torch.where(t != t_hat)[0] 
     #Store the index of the unsuccessfully matched samples.
@@ -38,7 +57,7 @@ def improved_finite_difference(t, yr, yc, r_hat, c_hat, lambda_, weights, h, cli
 
     #Calculate pre-perturbation dual decision loss.
     DDL_1 = r_bar_1 - lambda_  * c_bar_1 
-
+    
     #Declare post-perturbation per capita revenue: a (nBatch) tensor
     r_bar_2 = torch.zeros(r_hat.shape[0]).float().cuda() 
     #Declare post-perturbation per capita cost: a (nBatch) tensor
@@ -69,43 +88,43 @@ def improved_finite_difference(t, yr, yc, r_hat, c_hat, lambda_, weights, h, cli
 
 
     #Calculate the perturbation of matching samples.
-    h_v[matching_idx, t[matching_idx]] = a[matching_idx, idx1[matching_idx]] - a[matching_idx, t[matching_idx]] - 1e-6
-    h_c[matching_idx, t[matching_idx]] = (a[matching_idx, t[matching_idx]] - a[matching_idx, idx1[matching_idx]]) / lambda_ + 1e-6
+    p_r[matching_idx, t[matching_idx]] = a[matching_idx, idx1[matching_idx]] - a[matching_idx, t[matching_idx]] - 1e-6
+    p_c[matching_idx, t[matching_idx]] = (a[matching_idx, t[matching_idx]] - a[matching_idx, idx1[matching_idx]]) / lambda_ + 1e-6
 
-    h_v[matching_idx, idx1[matching_idx]] = -h_v[matching_idx, t[matching_idx]]
-    h_c[matching_idx, idx1[matching_idx]] = -h_c[matching_idx, t[matching_idx]]
+    p_r[matching_idx, idx1[matching_idx]] = -p_r[matching_idx, t[matching_idx]]
+    p_c[matching_idx, idx1[matching_idx]] = -p_c[matching_idx, t[matching_idx]]
 
 
     #Calculate the per capita revenue and per capita cost after the matching samples are perturbed.
     r_bar_2[matching_idx] = (r_bar_1[matching_idx] * N[matching_idx] - yr[matching_idx]) / (N[matching_idx] - 1 / weights[t[matching_idx]])
-    c_bar_2[matching_idx] = (r_bar_1[matching_idx] * N[matching_idx] - yc[matching_idx]) / (N[matching_idx] - 1 / weights[t[matching_idx]])
+    c_bar_2[matching_idx] = (c_bar_1[matching_idx] * N[matching_idx] - yc[matching_idx]) / (N[matching_idx] - 1 / weights[t[matching_idx]])
         
 
     DDL_2[matching_idx] = r_bar_2[matching_idx] - lambda_ * c_bar_2[matching_idx] 
 
     if clip == 'fix':        
-        mask_r = (torch.abs(h_v) < h) & (h_v != 0)
-        h_v[mask_r] = torch.where(h_v[mask_r] > 0, torch.tensor(h).cuda(), torch.tensor(-h).cuda())      
-        mask_c = (torch.abs(h_c) < h) & (h_c != 0)
-        h_c[mask_c] = torch.where(h_c[mask_c] > 0, torch.tensor(h).cuda(), torch.tensor(-h).cuda())
+        mask_r = (torch.abs(p_r) < h) & (p_r != 0)
+        p_r[mask_r] = torch.where(p_r[mask_r] > 0, torch.tensor(h).cuda(), torch.tensor(-h).cuda())      
+        mask_c = (torch.abs(p_c) < h) & (p_c != 0)
+        p_c[mask_c] = torch.where(p_c[mask_c] > 0, torch.tensor(h).cuda(), torch.tensor(-h).cuda())
     elif clip == 'max':
-        max_hv = torch.max(torch.abs(h_v))
-        max_hc = torch.max(torch.abs(h_c))
-        h_v = torch.where(h_v > 0, max_hv, torch.where(h_v < 0, -max_hv, h_v))
-        h_c = torch.where(h_c > 0, max_hc, torch.where(h_c < 0, -max_hc, h_c))
+        max_pr = torch.max(torch.abs(p_r))
+        max_pc = torch.max(torch.abs(p_c))
+        p_r = torch.where(p_r > 0, max_pr, torch.where(p_r < 0, -max_pr, p_r))
+        p_c = torch.where(p_c > 0, max_pc, torch.where(p_c < 0, -max_pc, p_c))
     
     #Calculate the gradient of the mismatching samples
-    dDDL_dr[mismatching_idx, t[mismatching_idx]] = (DDL_2[mismatching_idx] - DDL_1[mismatching_idx]) / h_v[mismatching_idx, t[mismatching_idx]]
-    dDDL_dc[mismatching_idx, t[mismatching_idx]] = (DDL_2[mismatching_idx] - DDL_1[mismatching_idx]) / h_c[mismatching_idx, t[mismatching_idx]]
-    dDDL_dr[mismatching_idx, t_hat[mismatching_idx]] = (DDL_2[mismatching_idx] - DDL_1[mismatching_idx]) / h_v[mismatching_idx, t_hat[mismatching_idx]]
-    dDDL_dc[mismatching_idx, t_hat[mismatching_idx]] = (DDL_2[mismatching_idx] - DDL_1[mismatching_idx]) / h_c[mismatching_idx, t_hat[mismatching_idx]]
+    dDDL_dr[mismatching_idx, t[mismatching_idx]] = (DDL_2[mismatching_idx] - DDL_1[mismatching_idx]) / p_r[mismatching_idx, t[mismatching_idx]]
+    dDDL_dc[mismatching_idx, t[mismatching_idx]] = (DDL_2[mismatching_idx] - DDL_1[mismatching_idx]) / p_c[mismatching_idx, t[mismatching_idx]]
+    dDDL_dr[mismatching_idx, t_hat[mismatching_idx]] = (DDL_2[mismatching_idx] - DDL_1[mismatching_idx]) / p_r[mismatching_idx, t_hat[mismatching_idx]]
+    dDDL_dc[mismatching_idx, t_hat[mismatching_idx]] = (DDL_2[mismatching_idx] - DDL_1[mismatching_idx]) / p_c[mismatching_idx, t_hat[mismatching_idx]]
 
 
     #Calculate the gradient of the matching samples
-    dDDL_dr[matching_idx, t[matching_idx]] =(DDL_2[matching_idx] - DDL_1[matching_idx]) / h_v[matching_idx, t[matching_idx]]
-    dDDL_dc[matching_idx, t[matching_idx]] = (DDL_2[matching_idx] - DDL_1[matching_idx]) / h_c[matching_idx, t[matching_idx]]
-    dDDL_dr[matching_idx, idx1[matching_idx]] = (DDL_2[matching_idx] - DDL_1[matching_idx]) / h_v[matching_idx, idx1[matching_idx]]
-    dDDL_dc[matching_idx, idx1[matching_idx]] = (DDL_2[matching_idx] - DDL_1[matching_idx]) / h_c[matching_idx, idx1[matching_idx]]
+    dDDL_dr[matching_idx, t[matching_idx]] =(DDL_2[matching_idx] - DDL_1[matching_idx]) / p_r[matching_idx, t[matching_idx]]
+    dDDL_dc[matching_idx, t[matching_idx]] = (DDL_2[matching_idx] - DDL_1[matching_idx]) / p_c[matching_idx, t[matching_idx]]
+    dDDL_dr[matching_idx, idx1[matching_idx]] = (DDL_2[matching_idx] - DDL_1[matching_idx]) / p_r[matching_idx, idx1[matching_idx]]
+    dDDL_dc[matching_idx, idx1[matching_idx]] = (DDL_2[matching_idx] - DDL_1[matching_idx]) / p_c[matching_idx, idx1[matching_idx]]
 
     if clip == 'fix':
         dDDL_dr[~mask_r] = 0
